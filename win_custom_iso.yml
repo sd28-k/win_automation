@@ -1,0 +1,98 @@
+---
+- name: Customize Windows ISO
+  hosts: localhost
+  become: true
+  tasks:
+    - name: Create working directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+      loop:
+        - /mnt/windows_iso
+        - /mnt/iso_custom/setup
+
+    - name: Mount the Windows ISO
+      ansible.builtin.command:
+        cmd: "mount -o loop /path/to/windows.iso /mnt/windows_iso"
+      args:
+        creates: /mnt/windows_iso/sources
+
+    - name: Copy ISO contents to a working directory
+      ansible.builtin.command:
+        cmd: "cp -r /mnt/windows_iso/* /mnt/iso_custom/"
+      args:
+        creates: /mnt/iso_custom/sources
+
+    - name: Create the Autounattend.xml file
+      ansible.builtin.copy:
+        dest: /mnt/iso_custom/Autounattend.xml
+        content: |
+          <?xml version="1.0" encoding="utf-8"?>
+          <unattend xmlns="urn:schemas-microsoft-com:unattend">
+              <settings pass="oobeSystem">
+                  <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+                      <AutoLogon>
+                          <Password>
+                              <Value>Password123!</Value>
+                              <PlainText>true</PlainText>
+                          </Password>
+                          <Enabled>true</Enabled>
+                          <Username>AdminUser</Username>
+                      </AutoLogon>
+                      <UserAccounts>
+                          <AdministratorPassword>
+                              <Value>Password123!</Value>
+                              <PlainText>true</PlainText>
+                          </AdministratorPassword>
+                          <LocalAccounts>
+                              <LocalAccount wcm:action="add">
+                                  <Name>AdminUser</Name>
+                                  <Password>
+                                      <Value>Password123!</Value>
+                                      <PlainText>true</PlainText>
+                                  </Password>
+                                  <Group>Administrators</Group>
+                              </LocalAccount>
+                          </LocalAccounts>
+                      </UserAccounts>
+                      <FirstLogonCommands>
+                          <SynchronousCommand wcm:action="add">
+                              <Order>1</Order>
+                              <Description>Configure Network Settings</Description>
+                              <CommandLine>powershell.exe -ExecutionPolicy Bypass -File C:\setup\configure-network.ps1</CommandLine>
+                          </SynchronousCommand>
+                      </FirstLogonCommands>
+                  </component>
+              </settings>
+          </unattend>
+
+    - name: Create the PowerShell script for network configuration
+      ansible.builtin.copy:
+        dest: /mnt/iso_custom/setup/configure-network.ps1
+        content: |
+          $interface = Get-NetAdapter | Where-Object { $_.Status -eq "Up" }
+          New-NetIPAddress -InterfaceIndex $interface.ifIndex -IPAddress "192.168.1.100" -PrefixLength 24 -DefaultGateway "192.168.1.1"
+          Set-DnsClientServerAddress -InterfaceIndex $interface.ifIndex -ServerAddresses "8.8.8.8", "8.8.4.4"
+          Enable-PSRemoting -Force
+          Set-Item WSMan:\LocalHost\Client\TrustedHosts -Value "*" -Force
+          Restart-Service WinRM
+          New-Item -Path "C:\setup" -Name "network_config_done.txt" -ItemType "File"
+
+    - name: Unmount the Windows ISO
+      ansible.builtin.command:
+        cmd: "umount /mnt/windows_iso"
+      ignore_errors: true
+
+    - name: Rebuild the ISO with custom files
+      ansible.builtin.command:
+        cmd: "oscdimg -n -m -b/mnt/iso_custom/boot/etfsboot.com /mnt/iso_custom/ /mnt/custom_windows.iso"
+      args:
+        creates: /mnt/custom_windows.iso
+
+    - name: Clean up temporary directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /mnt/windows_iso
+        - /mnt/iso_custom
